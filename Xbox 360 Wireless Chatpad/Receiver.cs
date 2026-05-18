@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 
 using LibUsbDotNet;
 using LibUsbDotNet.Main;
@@ -101,58 +101,36 @@ namespace Xbox360WirelessChatpad
                     }
                 }
             }
-            catch
+            catch (Exception ex)
             {
-                parentWindow.Invoke(new logCallback(parentWindow.logMessage),
-                    "ERROR: Problem Connecting to Wireless Receiver.");
+                parentWindow.Invoke(new logCallback(parentWindow.logMessage), "ERROR: " + ex.Message);
             }
         }
 
         public void killReceiver()
         {
-            // Loop through each Controller to clean it up
+            // Desconectar endpoints y liberar el dispositivo USB de forma segura
             for (int i = 0; i < 4; i++)
             {
-                // Turns off the Xbox controllers
-                if (receiverAttached)
-                {
-                    if (xboxControllers[i].controllerAttached)
-                    {
-                        // Clean up the controller's keep-alive threads
-                        xboxControllers[i].killKeepAlive();
-
-                        // Clean up the controller's mouse mode threads
-                        xboxControllers[i].killMouseMode();
-
-                        // Clean up the controller's button combo threads
-                        xboxControllers[i].killButtonCombo();
-
-                        // Clean up the controller
-                        xboxControllers[i].killController();
-                    }
-                }
-
-                // Cleans up the Wireless Receiver Data
-                if (epWriters[i] != null)
-                {
-                    epWriters[i].Abort();
-                    epWriters[i].Dispose();
-                }
-
                 if (epReaders[i] != null)
                 {
-                    epReaders[i].Abort();
-                    epReaders[i].Dispose();
+                    epReaders[i].DataReceivedEnabled = false;
+                    epReaders[i].DataReceived -= xboxControllers[i].processDataPacket;
+                }
+                if (xboxControllers[i].controllerAttached)
+                {
+                    xboxControllers[i].killController();
                 }
             }
 
-            // Clean up the Receiver
-            if (wirelessReceiver != null)
+            if (wirelessReceiver != null && wirelessReceiver.IsOpen)
             {
-                if (receiverAttached)
-                    wirelessReceiver.Close();
-                wirelessReceiver = null;
+                wirelessReceiver.ReleaseInterface(1);
+                wirelessReceiver.Close();
             }
+            
+            UsbDevice.Exit();
+            receiverAttached = false;
         }
     }
 }
