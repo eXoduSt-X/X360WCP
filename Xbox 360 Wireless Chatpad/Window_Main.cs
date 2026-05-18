@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Windows.Forms;
 
 namespace Xbox360WirelessChatpad
@@ -22,7 +22,7 @@ namespace Xbox360WirelessChatpad
         {
             try
             {
-                // Instantiate the Controllers
+                // Instantiate the Controllers using ViGEm Bus
                 xboxControllers[0] = new Controller(this);
                 xboxControllers[1] = new Controller(this);
                 xboxControllers[2] = new Controller(this);
@@ -30,7 +30,8 @@ namespace Xbox360WirelessChatpad
             }
             catch (VjoyNotEnabledException)
             {
-                MessageBox.Show("Xbox 360 Wireless Chatpad could not be loaded.\n\nThe vJoy driver is not enabled or it is not installed. You can enable vJoy using the \"Configure vJoy\" tool or go to https://github.com/KytechN24/xbox360wirelesschatpad for more information on how to install and configure vJoy for this application.",
+                // Mensaje adaptado para ViGEmBus
+                MessageBox.Show("Xbox 360 Wireless Chatpad could not be loaded.\n\nThe ViGEmBus driver is not installed or enabled on this system. Please make sure you have the ViGEmBus driver installed (DS4Windows standard driver) for this application to emulate native XInput controllers.",
                     "Xbox 360 Wireless Chatpad Error",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Error);
@@ -199,7 +200,7 @@ namespace Xbox360WirelessChatpad
             ctrl4LeftDeadzone.Value = Properties.Settings.Default.ctrl4DeadzoneL;
             ctrl4RightDeadzone.Value = Properties.Settings.Default.ctrl4DeadzoneR;
 
-            // Register each Controller to a vJoy Joystick
+            // Register each Controller to a Virtual ViGEm XInput Gamepad
             xboxControllers[0].registerJoystick(1);
             xboxControllers[1].registerJoystick(2);
             xboxControllers[2].registerJoystick(3);
@@ -212,7 +213,6 @@ namespace Xbox360WirelessChatpad
 
         private void Window_Main_Resize(object sender, EventArgs e)
         {
-            // Hides the window and minimizes to the System Tray upon Resize
             if (WindowState == FormWindowState.Minimized)
                 Hide();
         }
@@ -221,35 +221,28 @@ namespace Xbox360WirelessChatpad
         {
             try
             {
-                // Cleanup the Wireless Receiver
                 xboxReceiver.killReceiver();
-
-                // Save the configuraiton file variables
                 Properties.Settings.Default.Save();
             }
             catch
             {
-                // If we have an exception, force the process to close
                 System.Environment.Exit(0);
             }
         }
 
         private void trayIcon_DoubleClick(object sender, EventArgs e)
         {
-            // Moves the window to the Taskbar when clicking the System Tray icon
             Show();
             WindowState = FormWindowState.Normal;
         }
 
         private void exitMenuItem_Click(object sender, EventArgs e)
         {
-            // Close the Window
             this.Close();
         }
 
         private void appLogTextbox_TextChanged(object sender, EventArgs e)
         {
-            // Automatically scrolls to the end of the textbox whenever the text changes
             appLogTextbox.SelectionStart = appLogTextbox.Text.Length;
             appLogTextbox.ScrollToCaret();
             appLogTextbox.Refresh();
@@ -257,60 +250,39 @@ namespace Xbox360WirelessChatpad
 
         private void chatpadTextBox_Enter(object sender, EventArgs e)
         {
-            // Removes out pre-populated message in the chatpadTextBox
             chatpadTextBox.TextAlign = HorizontalAlignment.Left;
             chatpadTextBox.Text = "";
-
-            // Removes the event handler so we don't continually remove the text
             chatpadTextBox.Enter -= chatpadTextBox_Enter;
         }
 
         private void triggerType_CheckChanged(object sender, EventArgs e)
         {
-            // Set corresponding controller trigger type based on the check box
             string checkBoxName = ((CheckBox)sender).Name;
 
             if (checkBoxName.Contains("1"))
             {
-                if (((CheckBox)sender).Checked)
-                    Properties.Settings.Default.ctrl1TriggerAsButton = true;
-               else
-                    Properties.Settings.Default.ctrl1TriggerAsButton = false;
-
+                Properties.Settings.Default.ctrl1TriggerAsButton = ((CheckBox)sender).Checked;
                 xboxControllers[0].configureGamepad(Properties.Settings.Default.ctrl1TriggerAsButton);
             }
             else if (checkBoxName.Contains("2"))
             {
-                if (((CheckBox)sender).Checked)
-                    Properties.Settings.Default.ctrl2TriggerAsButton = true;
-                else
-                    Properties.Settings.Default.ctrl2TriggerAsButton = false;
-
+                Properties.Settings.Default.ctrl2TriggerAsButton = ((CheckBox)sender).Checked;
                 xboxControllers[1].configureGamepad(Properties.Settings.Default.ctrl2TriggerAsButton);
             }
             else if (checkBoxName.Contains("3"))
             {
-                if (((CheckBox)sender).Checked)
-                    Properties.Settings.Default.ctrl3TriggerAsButton = true;
-                else
-                    Properties.Settings.Default.ctrl3TriggerAsButton = false;
-
+                Properties.Settings.Default.ctrl3TriggerAsButton = ((CheckBox)sender).Checked;
                 xboxControllers[2].configureGamepad(Properties.Settings.Default.ctrl3TriggerAsButton);
             }
             else
             {
-                if (((CheckBox)sender).Checked)
-                    Properties.Settings.Default.ctrl4TriggerAsButton = true;
-                else
-                    Properties.Settings.Default.ctrl4TriggerAsButton = false;
-
+                Properties.Settings.Default.ctrl4TriggerAsButton = ((CheckBox)sender).Checked;
                 xboxControllers[3].configureGamepad(Properties.Settings.Default.ctrl4TriggerAsButton);
             }
         }
 
         private void keyboardType_Selected(object sender, EventArgs e)
         {
-            // Set the corresponding controller keyboard type based on the radio buttons
             string radioButtonName = ((RadioButton)sender).Name;
 
             if (radioButtonName.Contains("1"))
@@ -349,33 +321,28 @@ namespace Xbox360WirelessChatpad
 
         private void deadzoneL_ValueChanged(object sender, EventArgs e)
         {
-            // Set the corresponding controllers right deadzone based on the slider
             string trackBarName = ((TrackBar)sender).Name;
 
             if (trackBarName.Contains("1"))
             {
-                // Controller 1
                 Properties.Settings.Default.ctrl1DeadzoneL = ctrl1LeftDeadzone.Value;
                 xboxControllers[0].deadzoneL = (int)Math.Round(ctrl1LeftDeadzone.Value * 327.67);
                 ctrl1LeftDeadzonePercentLabel.Text = ctrl1LeftDeadzone.Value.ToString() + "%";
             }
             else if (trackBarName.Contains("2"))
             {
-                // Controller 2
                 Properties.Settings.Default.ctrl2DeadzoneL = ctrl2LeftDeadzone.Value;
                 xboxControllers[1].deadzoneL = (int)Math.Round(ctrl2LeftDeadzone.Value * 327.67);
                 ctrl2LeftDeadzonePercentLabel.Text = ctrl2LeftDeadzone.Value.ToString() + "%";
             }
             else if (trackBarName.Contains("3"))
             {
-                // Controller 3
                 Properties.Settings.Default.ctrl3DeadzoneL = ctrl3LeftDeadzone.Value;
                 xboxControllers[2].deadzoneL = (int)Math.Round(ctrl3LeftDeadzone.Value * 327.67);
                 ctrl3LeftDeadzonePercentLabel.Text = ctrl3LeftDeadzone.Value.ToString() + "%";
             }
             else
             {
-                // Controller 4
                 Properties.Settings.Default.ctrl4DeadzoneL = ctrl4LeftDeadzone.Value;
                 xboxControllers[3].deadzoneL = (int)Math.Round(ctrl4LeftDeadzone.Value * 327.67);
                 ctrl4LeftDeadzonePercentLabel.Text = ctrl4LeftDeadzone.Value.ToString() + "%";
@@ -384,33 +351,28 @@ namespace Xbox360WirelessChatpad
 
         private void deadzoneR_ValueChanged(object sender, EventArgs e)
         {
-            // Set the corresponding controllers right deadzone based on the slider
             string trackBarName = ((TrackBar)sender).Name;
 
             if (trackBarName.Contains("1"))
             {
-                // Controller 1
                 Properties.Settings.Default.ctrl1DeadzoneR = ctrl1RightDeadzone.Value;
                 xboxControllers[0].deadzoneR = (int)Math.Round(ctrl1RightDeadzone.Value * 327.67);
                 ctrl1RightDeadzonePercentLabel.Text = ctrl1RightDeadzone.Value.ToString() + "%";
             }
             else if (trackBarName.Contains("2"))
             {
-                // Controller 2
                 Properties.Settings.Default.ctrl2DeadzoneR = ctrl2RightDeadzone.Value;
                 xboxControllers[1].deadzoneR = (int)Math.Round(ctrl2RightDeadzone.Value * 327.67);
                 ctrl2RightDeadzonePercentLabel.Text = ctrl2RightDeadzone.Value.ToString() + "%";
             }
             else if (trackBarName.Contains("3"))
             {
-                // Controller 3
                 Properties.Settings.Default.ctrl3DeadzoneR = ctrl3RightDeadzone.Value;
                 xboxControllers[2].deadzoneR = (int)Math.Round(ctrl3RightDeadzone.Value * 327.67);
                 ctrl3RightDeadzonePercentLabel.Text = ctrl3RightDeadzone.Value.ToString() + "%";
             }
             else
             {
-                // Controller 4
                 Properties.Settings.Default.ctrl4DeadzoneR = ctrl4RightDeadzone.Value;
                 xboxControllers[3].deadzoneR = (int)Math.Round(ctrl4RightDeadzone.Value * 327.67);
                 ctrl4RightDeadzonePercentLabel.Text = ctrl4RightDeadzone.Value.ToString() + "%";
@@ -421,20 +383,10 @@ namespace Xbox360WirelessChatpad
         {
             switch (ctrl)
             {
-                case 1:
-                    ctrl1Group.Enabled = true;
-                    break;
-                case 2:
-                    ctrl2Group.Enabled = true;
-                    break;
-                case 3:
-                    ctrl3Group.Enabled = true;
-                    break;
-                case 4:
-                    ctrl4Group.Enabled = true;
-                    break;
-                default:
-                    break;
+                case 1: ctrl1Group.Enabled = true; break;
+                case 2: ctrl2Group.Enabled = true; break;
+                case 3: ctrl3Group.Enabled = true; break;
+                case 4: ctrl4Group.Enabled = true; break;
             }
         }
 
@@ -442,20 +394,10 @@ namespace Xbox360WirelessChatpad
         {
             switch (ctrl)
             {
-                case 1:
-                    ctrl1Group.Enabled = false;
-                    break;
-                case 2:
-                    ctrl2Group.Enabled = false;
-                    break;
-                case 3:
-                    ctrl3Group.Enabled = false;
-                    break;
-                case 4:
-                    ctrl4Group.Enabled = false;
-                    break;
-                default:
-                    break;
+                case 1: ctrl1Group.Enabled = false; break;
+                case 2: ctrl2Group.Enabled = false; break;
+                case 3: ctrl3Group.Enabled = false; break;
+                case 4: ctrl4Group.Enabled = false; break;
             }
         }
 
@@ -469,32 +411,8 @@ namespace Xbox360WirelessChatpad
                     break;
                 case 2:
                     ctrl2MouseModeBox.Checked = modeStatus;
-                    Properties.Settings.Default.ctrl1MouseMode = modeStatus;
+                    Properties.Settings.Default.ctrl2MouseMode = modeStatus; // Bug original corregido (ctrl1 -> ctrl2)
                     break;
                 case 3:
                     ctrl3MouseModeBox.Checked = modeStatus;
-                    Properties.Settings.Default.ctrl1MouseMode = modeStatus;
-                    break;
-                case 4:
-                    ctrl4MouseModeBox.Checked = modeStatus;
-                    Properties.Settings.Default.ctrl1MouseMode = modeStatus;
-                    break;
-                default:
-                    break;
-            }            
-        }
-
-        public void logMessage(string message)
-        {
-            string currentTime;
-            currentTime = DateTime.Now.ToString("G");
-
-            // Pre-pend the Text Box text with timestamp and new message
-            appLogTextbox.Text = "[" + currentTime + "] - " + message + "\r\n" + appLogTextbox.Text;
-
-            // Scroll to Top of Textbox
-            appLogTextbox.Select(0, 0);
-            appLogTextbox.ScrollToCaret();
-        }
-    }
-}
+                    Properties.Settings.Default.ctrl3MouseMode = modeStatus;
