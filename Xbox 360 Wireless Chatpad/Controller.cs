@@ -1,14 +1,11 @@
-using System;
-using System.Collections.Generic;
-using System.Windows.Forms;
-
 using InputManager;
-using Nefarius.ViGEm.Client;
-using Nefarius.ViGEm.Client.Targets;
-using Nefarius.ViGEm.Client.Targets.Xbox360;
-
 using LibUsbDotNet;
 using LibUsbDotNet.Main;
+using Nefarius.ViGEm.Client.Targets.Xbox360;
+using System;
+using System.Collections.Generic;
+using System.Threading;
+using System.Windows.Forms;
 
 namespace Xbox360WirelessChatpad
 {
@@ -25,7 +22,10 @@ namespace Xbox360WirelessChatpad
 
         // The Controllers associated endpoint writer in the receiver
         private UsbEndpointWriter epWriter;
-        
+
+        // Wrapper thread-safe para las escrituras USB
+        private UsbTransport usbTransport;
+
         // Parent Window object necessary to communicate with form controls
         private Window_Main parentWindow;
 
@@ -34,73 +34,81 @@ namespace Xbox360WirelessChatpad
         private bool inhibitKeepAlive = false;
         private int inhibitCounter = 0;
 
-        // Button Combo Thread, this will execute to monitor for special button
-        // combinations like Mouse Mode and Shutdown
+        // Button Combo Thread
         private System.Threading.Thread threadButtonCombo = null;
 
-        // MouseMode Thread, this will execute periodically to move the mouse cursor
-        // and scroll vertical when inidcated by joystick data
+        // MouseMode Thread
         private System.Threading.Thread mouseModeThread = null;
+
+        private CancellationTokenSource _keepAliveCts;
+        private CancellationTokenSource _buttonComboCts;
+        private CancellationTokenSource _mouseModeCts;
+        private CancellationTokenSource _ledBlinkCts;
 
         // Determines if the chatpad needs initialization/handshake command.
         private bool chatpadInitNeeded = true;
 
+        // Para detectar cambios de stick (edge detection)
+        private short _logPrevLeftX;
+        private short _logPrevLeftY;
+        private short _logPrevRightX;
+        private short _logPrevRightY;
+        private const int STICK_LOG_THRESHOLD = 20000;   // ~60% del rango
+        private bool _leftStickActive;
+        private bool _rightStickActive;
         // Mapping for various device commands
         private Dictionary<string, byte[]> controllerCommands = new Dictionary<string, byte[]>()
-            {
-                // General Device Commands
-                { "RefreshConnection",  new byte[4] {0x08, 0x00, 0x00, 0x00} },
-                { "KeepAlive1",         new byte[4] {0x00, 0x00, 0x0C, 0x1F} },
-                { "KeepAlive2",         new byte[4] {0x00, 0x00, 0x0C, 0x1E} },
-                { "ChatpadInit",        new byte[4] {0x00, 0x00, 0x0C, 0x1B} },
-                { "SetControllerNum1",  new byte[4] {0x00, 0x00, 0x08, 0x42} },
-                { "SetControllerNum2",  new byte[4] {0x00, 0x00, 0x08, 0x43} },
-                { "SetControllerNum3",  new byte[4] {0x00, 0x00, 0x08, 0x44} },
-                { "SetControllerNum4",  new byte[4] {0x00, 0x00, 0x08, 0x45} },
-                { "DisableController",  new byte[4] {0x00, 0x00, 0x08, 0xC0} },
+        {
+            { "RefreshConnection", new byte[4] {0x08, 0x00, 0x00, 0x00} },
+            { "KeepAlive1",        new byte[4] {0x00, 0x00, 0x0C, 0x1F} },
+            { "KeepAlive2",        new byte[4] {0x00, 0x00, 0x0C, 0x1E} },
+            { "ChatpadInit",       new byte[4] {0x00, 0x00, 0x0C, 0x1B} },
+            { "SetControllerNum1", new byte[4] {0x00, 0x00, 0x08, 0x42} },
+            { "SetControllerNum2", new byte[4] {0x00, 0x00, 0x08, 0x43} },
+            { "SetControllerNum3", new byte[4] {0x00, 0x00, 0x08, 0x44} },
+            { "SetControllerNum4", new byte[4] {0x00, 0x00, 0x08, 0x45} },
+            { "DisableController", new byte[4] {0x00, 0x00, 0x08, 0xC0} },
 
-                // Chatpad LED Commands
-                { "GreenOn",       new byte[4] {0x00, 0x00, 0x0C, 0x09} },
-                { "GreenOff",      new byte[4] {0x00, 0x00, 0x0C, 0x01} },
-                { "OrangeOn",      new byte[4] {0x00, 0x00, 0x0C, 0x0A} },
-                { "OrangeOff",     new byte[4] {0x00, 0x00, 0x0C, 0x02} },
-                { "MessengerOn",   new byte[4] {0x00, 0x00, 0x0C, 0x0B} },
-                { "MessengerOff",  new byte[4] {0x00, 0x00, 0x0C, 0x03} },
-                { "CapslockOn",    new byte[4] {0x00, 0x00, 0x0C, 0x08} },
-                { "CapslockOff",   new byte[4] {0x00, 0x00, 0x0C, 0x00} }
-            };
+            { "GreenOn",     new byte[4] {0x00, 0x00, 0x0C, 0x09} },
+            { "GreenOff",    new byte[4] {0x00, 0x00, 0x0C, 0x01} },
+            { "OrangeOn",    new byte[4] {0x00, 0x00, 0x0C, 0x0A} },
+            { "OrangeOff",   new byte[4] {0x00, 0x00, 0x0C, 0x02} },
+            { "MessengerOn", new byte[4] {0x00, 0x00, 0x0C, 0x0B} },
+            { "MessengerOff",new byte[4] {0x00, 0x00, 0x0C, 0x03} },
+            { "CapslockOn",  new byte[4] {0x00, 0x00, 0x0C, 0x08} },
+            { "CapslockOff", new byte[4] {0x00, 0x00, 0x0C, 0x00} }
+        };
 
-        // Contains the mapping of Chatpad Buttons, Green Modifiers, and
-        // Orange Modifiers respectively.
-        private Dictionary<int, Keys> keyMap = new Dictionary<int, Keys>();
-        private Dictionary<int, string> greenMap = new Dictionary<int, string>();
-        private Dictionary<int, string> orangeMap = new Dictionary<int, string>();
+        // Traduce las teclas del chatpad a teclas de Windows (3 layouts)
+        private readonly ChatpadMapper chatpadMapper = new ChatpadMapper();
+
+        // Gamepad virtual ViGEm encapsulado
+        private GamepadEmitter gamepad;
+        private MouseModeHandler mouseModeHandler;
 
         // Tracks which Chatpad Modifiers are active
         private Dictionary<string, bool> chatpadMod = new Dictionary<string, bool>()
-            {
-                { "Green", false },
-                { "Orange", false },
-                { "Shift", false },
-                { "Capslock", false },
-                { "Messenger", false }
-            };
+        {
+            { "Green",     false },
+            { "Orange",    false },
+            { "Shift",     false },
+            { "Capslock",  false },
+            { "Messenger", false }
+        };
 
         // Tracks which Chatpad LEDs are illuminated
         private Dictionary<string, bool> chatpadLED = new Dictionary<string, bool>()
-            {
-                { "Green", false },
-                { "Orange", false },
-                { "Capslock", false },
-                { "Messenger", false }
-            };
+        {
+            { "Green",     false },
+            { "Orange",    false },
+            { "Capslock",  false },
+            { "Messenger", false }
+        };
 
-        // Tracks which keys are currently being held down, used to
-        // determine if a keystroke should be sent or not
+        // Tracks which keys are currently being held down
         private List<byte> chatpadKeysHeld = new List<byte>();
 
-        // Tracks which keyboard keys are down, used to track if a
-        // KeyUp command needs to be sent or not
+        // Tracks which keyboard keys are down
         private List<Keys> keyboardKeysDown = new List<Keys>();
 
         // Identifies if the sent key data should be upper case or lower case
@@ -110,81 +118,153 @@ namespace Xbox360WirelessChatpad
         private bool altTabActive = false;
 
         // Used to determine if the data has changed since the last packet
-        private byte[] dataPacketLast = new byte[3]; 
-
-        // -----------------
-        // Gamepad Variables
-        // -----------------
-
-        // ViGEm Client and Virtual XInput Gamepad
-        private ViGEmClient vigemClient;
-        private IXbox360Gamepad virtualGamepad;
+        private byte[] dataPacketLast = new byte[3];
 
         // Deadzone variables for the joysticks on the gamepad
-        public int deadzoneL = 0;
-        public int deadzoneR = 0;
+        // Deadzone variables for the joysticks on the gamepad.
+        // Son propiedades para que cualquier cambio se propague al MouseModeHandler.
+        private int _deadzoneL = 0;
+        public int deadzoneL
+        {
+            get { return _deadzoneL; }
+            set
+            {
+                _deadzoneL = value;
+                mouseModeHandler?.SetDeadzones(_deadzoneL, _deadzoneR);
+            }
+        }
+
+        private int _deadzoneR = 0;
+        public int deadzoneR
+        {
+            get { return _deadzoneR; }
+            set
+            {
+                _deadzoneR = value;
+                mouseModeHandler?.SetDeadzones(_deadzoneL, _deadzoneR);
+            }
+        }
 
         // Global Mouse Mode Flag for use by data packet processing
         public bool mouseModeFlag = false;
 
-        // Relative Mouse Data based on Joystick location. This will
-        // be used by a higher level timer function to continually move
-        // the mouse.
-        private int mouseVelX, mouseVelY;
-
-        // Direction Data for the Right Joystick location. This will
-        // be used by a higher level timer function to continually hold
-        // down an arrow key, allowing for scrolling or other fast navigation.
-        // 0 = Neutral, 
-        private int rightStickDir;
-
-        // Special Command booleans used to detect when special button
-        // combinations are pressed
+      
+        // Special Command booleans
         private bool cmdKillController = false;
         private bool cmdMouseModeToggle = false;
 
-        // Identifies if the left or right mouse buttons are depressed
-        // Only used in Mouse Mode.
-        private bool leftButtonDown = false;
-        private bool rightButtonDown = false;
+        // Guide button edge-detection
+        private bool guideButtonLastState = false;
 
-        private bool navActive = false;
+        // Long-press detection
+        private DateTime guidePressStart = DateTime.MinValue;
+        private bool guidePowerOffTriggered = false;
+        private const int GUIDE_HOLD_MS = 5000;
+
+        // Previous gamepad button bytes for press-edge logging
+        private byte _logPrevByte6 = 0;
+        private byte _logPrevByte7 = 0;
+        private bool _logPrevLt = false;
+        private bool _logPrevRt = false;
+
+
+        // Custom key mappings for Mouse Mode
+        private System.Windows.Forms.Keys _startKeyCustom = System.Windows.Forms.Keys.Enter;
+        private System.Windows.Forms.Keys _backKeyCustom = System.Windows.Forms.Keys.Delete;
+        private System.Windows.Forms.Keys _lbKeyCustom = System.Windows.Forms.Keys.None;
+
+        public System.Windows.Forms.Keys StartKeyCustom
+        {
+            get { return _startKeyCustom; }
+            set { _startKeyCustom = value; }
+        }
+
+        public System.Windows.Forms.Keys BackKeyCustom
+        {
+            get { return _backKeyCustom; }
+            set { _backKeyCustom = value; }
+        }
+
+        public System.Windows.Forms.Keys LBKeyCustom
+        {
+            get { return _lbKeyCustom; }
+            set { _lbKeyCustom = value; }
+        }
+
+        private bool startKeySubscribed = false;
+        private bool backKeySubscribed = false;
+#pragma warning disable 0414
+        private bool lbKeySubscribed = false;
+#pragma warning restore 0414
 
         public Controller(Window_Main window)
         {
             parentWindow = window;
-
-            try
-            {
-                // Instanciar el bus de emulación virtual ViGEm
-                vigemClient = new ViGEmClient();
-                virtualGamepad = vigemClient.CreateXbox360Gamepad();
-            }
-            catch (Exception)
-            {
-                throw new VjoyNotEnabledException(); // Reutilizado por compatibilidad de firmas de excepción en el proyecto original
-            }
+            // El GamepadEmitter se crea en registerJoystick(), cuando ya
+            // sabemos el número de mando.
         }
 
+        // Parpadea un LED del chatpad 3 veces sin bloquear el hilo de paquetes
+        private void ParpadearLed(string onCmd, string offCmd)
+        {
+            // Cancela un parpadeo anterior para que no se mezclen
+            try { _ledBlinkCts?.Cancel(); } catch { }
+
+            var cts = new CancellationTokenSource();
+            _ledBlinkCts = cts;
+            var token = cts.Token;
+
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                try
+                {
+                    for (int i = 0; i < 3; i++)
+                    {
+                        sendData(controllerCommands[onCmd]);
+                        if (token.WaitHandle.WaitOne(100)) break;
+                        sendData(controllerCommands[offCmd]);
+                        if (token.WaitHandle.WaitOne(100)) break;
+                    }
+                }
+                catch { }
+                finally
+                {
+                    // Si se canceló a mitad, deja el LED apagado
+                    try { sendData(controllerCommands[offCmd]); } catch { }
+                }
+            });
+        }
         public void registerEndpointWriter(UsbEndpointWriter writer)
         {
             epWriter = writer;
+            usbTransport = new UsbTransport(writer);
         }
 
         public void registerJoystick(int ctrlNum)
         {
             controllerNumber = ctrlNum;
 
+            // Si ya existía un emitter, liberarlo
+            gamepad?.Dispose();
+
             try
             {
-                // Conectar el control virtual directo al Bus XInput de Windows
-                virtualGamepad.Connect();
+                gamepad = new GamepadEmitter(ctrlNum);
+                gamepad.Connect();
             }
             catch (Exception)
             {
                 parentWindow.Invoke(new logCallback(parentWindow.logMessage),
-                    "WARNING: Failed to Connect ViGEm XInput Gamepad Number " + controllerNumber + ".");
+                    "WARN: ViGEm C" + controllerNumber + " falló.");
             }
+
+            // Crear el handler de Mouse Mode con el gamepad ya listo
+            mouseModeHandler = new MouseModeHandler(
+                gamepad,
+                parentWindow,                              // ← Control para el Invoke
+                msg => parentWindow.BeginInvoke(new logCallback(parentWindow.logMessage), msg));
+            // Aplicar deadzones actuales al handler recién creado
+            mouseModeHandler.SetDeadzones(_deadzoneL, _deadzoneR);
         }
 
         public void processDataPacket(object sender, EndpointDataEventArgs e)
@@ -198,15 +278,14 @@ namespace Xbox360WirelessChatpad
                     if (controllerAttached)
                     {
                         parentWindow.Invoke(new logCallback(parentWindow.logMessage),
-                            "Xbox 360 Wireless Controller " + controllerNumber + " Disconnected.");
+                               "C" + controllerNumber + " desconectado.");
 
                         killMouseMode();
                         killKeepAlive();
                         killButtonCombo();
                         resetComboButtons();
 
-                        if (virtualGamepad != null)
-                            virtualGamepad.Disconnect();
+                        gamepad?.Disconnect();
 
                         parentWindow.Invoke(new controllerDisconnectCallback(parentWindow.controllerDisconnected), controllerNumber);
                     }
@@ -216,6 +295,9 @@ namespace Xbox360WirelessChatpad
                 else
                 {
                     controllerAttached = true;
+
+                    // Reconectar el pad virtual si hace falta (idempotente)
+                    gamepad?.Connect();
 
                     switch (controllerNumber)
                     {
@@ -227,22 +309,24 @@ namespace Xbox360WirelessChatpad
                             parentWindow.Invoke(new logCallback(parentWindow.logMessage), "ERROR: Unknown Controller Number.");
                             break;
                     }
-
-                    threadKeepAlive = new System.Threading.Thread(new System.Threading.ThreadStart(tickKeepAlive));
+                    _keepAliveCts = new CancellationTokenSource();
+                    threadKeepAlive = new System.Threading.Thread(() => tickKeepAlive(_keepAliveCts.Token));
                     threadKeepAlive.IsBackground = true;
+                    threadKeepAlive.Name = $"KeepAlive-C{controllerNumber}";
                     threadKeepAlive.Start();
 
-                    threadButtonCombo = new System.Threading.Thread(new System.Threading.ThreadStart(tickButtonCombo));
+                    _buttonComboCts = new CancellationTokenSource();
+                    threadButtonCombo = new System.Threading.Thread(() => tickButtonCombo(_buttonComboCts.Token));
                     threadButtonCombo.IsBackground = true;
+                    threadButtonCombo.Name = $"ButtonCombo-C{controllerNumber}";
                     threadButtonCombo.Start();
 
                     if (mouseModeFlag)
                         startMouseMode();
 
                     parentWindow.Invoke(new controllerConnectCallback(parentWindow.controllerConnected), controllerNumber);
-
                     parentWindow.Invoke(new logCallback(parentWindow.logMessage),
-                        "Xbox 360 Wireless Controller " + controllerNumber + " Connected (XInput).");
+                        "C" + controllerNumber + " conectado.");
                 }
             }
             else if (e.Buffer[0] == 0x00 && e.Buffer[2] == 0x00 && e.Buffer[3] == 0xF0)
@@ -251,12 +335,8 @@ namespace Xbox360WirelessChatpad
                 {
                     switch (e.Buffer[1])
                     {
-                        case 0x01:
-                            ProcessGamepadData(e.Buffer);
-                            break;
-                        case 0x02:
-                            ProcessChatpadData(e.Buffer);
-                            break;
+                        case 0x01: ProcessGamepadData(e.Buffer); break;
+                        case 0x02: ProcessChatpadData(e.Buffer); break;
                     }
                 }
             }
@@ -269,7 +349,7 @@ namespace Xbox360WirelessChatpad
                 if (dataPacket[25] == 0x03)
                     chatpadInitNeeded = true;
                 else if (dataPacket[25] != 0x04)
-                    parentWindow.Invoke(new logCallback(parentWindow.logMessage), "WARNING: Unknown Chatpad Status Data.");
+                    parentWindow.Invoke(new logCallback(parentWindow.logMessage), "WARN: chatpad status desconocido.");
             }
             else if (dataPacket[24] == 0x00)
             {
@@ -310,7 +390,17 @@ namespace Xbox360WirelessChatpad
                     if (!chatpadMod["Capslock"] && chatpadLED["Capslock"]) { sendData(controllerCommands["CapslockOff"]); chatpadLED["Capslock"] = false; }
 
                     flagUpperCase = chatpadMod["Shift"] ^ chatpadMod["Capslock"];
-                    if (flagUpperCase) Keyboard.KeyDown(Keys.LShiftKey); else Keyboard.KeyUp(Keys.LShiftKey);
+                    if (flagUpperCase)
+                    {
+                        Keyboard.KeyDown(Keys.LShiftKey);
+                    }
+                    else
+                    {
+                        // Solo soltar LShift si nadie más lo está reteniendo (p.ej. RB en Mouse Mode)
+                        bool mouseModeHoldingShift = mouseModeFlag && mouseModeHandler != null && mouseModeHandler.IsShiftHeld;
+                        if (!mouseModeHoldingShift)
+                            Keyboard.KeyUp(Keys.LShiftKey);
+                    }
 
                     if (chatpadMod["Messenger"]) Keyboard.KeyDown(Keys.Tab); else Keyboard.KeyUp(Keys.Tab);
 
@@ -340,86 +430,299 @@ namespace Xbox360WirelessChatpad
                     foreach (var key in chatpadKeysHeld)
                         if (key != dataPacket[26] && key != dataPacket[27])
                             keysToRemove.Add(key);
+
                     foreach (var key in keysToRemove)
                     {
-                        if (keyboardKeysDown.Contains(keyMap[key]))
+                        Keys mapped = chatpadMapper.GetKey(key);
+                        if (mapped != Keys.None && keyboardKeysDown.Contains(mapped))
                         {
-                            keyboardKeysDown.Remove(keyMap[key]);
-                            Keyboard.KeyUp(keyMap[key]);
+                            keyboardKeysDown.Remove(mapped);
+                            chatpadMapper.ReleaseKey(mapped);
                         }
                         chatpadKeysHeld.Remove(key);
                     }
                 }
             }
             else
-                parentWindow.Invoke(new logCallback(parentWindow.logMessage), "WARNING: Unknown Chatpad Data.");
+                parentWindow.Invoke(new logCallback(parentWindow.logMessage), "WARN: chatpad data desconocida.");
         }
 
+        // -------------------------------------------------------------------
+        // Helpers de hilo UI
+        // -------------------------------------------------------------------
+
+        private delegate void VoidDelegate();
+
+        private void EjecutarEnHiloUI(Action action, bool sincrono)
+        {
+            if (parentWindow.InvokeRequired)
+            {
+                if (sincrono)
+                    parentWindow.Invoke(new VoidDelegate(() => action()));
+                else
+                    parentWindow.BeginInvoke(new VoidDelegate(() => action()));
+            }
+            else
+                action();
+        }
+
+        // -------------------------------------------------------------------
+        // PROCESS GAMEPAD DATA
+        // -------------------------------------------------------------------
+        // Helper que devuelve el nombre del botón según el modo
+        string MapLabel(string buttonName)
+        {
+            if (!mouseModeFlag) return buttonName;
+
+            switch (buttonName)
+            {
+                case "LT": return "LT (CTRL)";
+                case "RT": return "RT (ALT+TAB)";
+                case "LB": return "LB (FAST+)";
+                case "RB": return "RB (SHIFT+SLOW-)";
+                case "X": return "X (CLIC IZQ)";
+                case "B": return "B (CLIC DER)";
+                case "A": return "A (SCROLL↓)";
+                case "Y": return "Y (SCROLL↑)";
+                case "L3": return "L3 (WIN+M)";
+                case "R3": return "R3 (ALT+F4)";
+                case "DPAD ARRIBA": return "DPAD ↑ (ARRIBA)";
+                case "DPAD ABAJO": return "DPAD ↓ (ABAJO)";
+                case "DPAD IZQUIERDA": return "DPAD ← (IZQ)";
+                case "DPAD DERECHA": return "DPAD → (DER)";
+                case "START": return "START (ENTER)";
+                case "BACK": return "BACK (DELETE)";
+                case "GUIDE": return "GUIDE (TOGGLE)";
+                default: return buttonName;
+            }
+        }
+        private void RegistrarBotonesEnLog(byte[] dataPacket)
+        {
+            byte b6 = dataPacket[6];
+            byte b7 = dataPacket[7];
+            bool ltNow = dataPacket[8] >= 50;
+            bool rtNow = dataPacket[9] >= 50;
+
+            void LogPress(string nombre)
+            {
+                string modo = mouseModeFlag ? " [RATÓN]" : "";
+                parentWindow.BeginInvoke(new logCallback(parentWindow.logMessage),
+                    string.Format("C{0}{1} ► {2}", controllerNumber, modo, nombre));
+            }
+
+            if ((b6 & 0x01) > 0 && (_logPrevByte6 & 0x01) == 0) LogPress(MapLabel("DPAD ARRIBA"));
+            if ((b6 & 0x02) > 0 && (_logPrevByte6 & 0x02) == 0) LogPress(MapLabel("DPAD ABAJO"));
+            if ((b6 & 0x04) > 0 && (_logPrevByte6 & 0x04) == 0) LogPress(MapLabel("DPAD IZQUIERDA"));
+            if ((b6 & 0x08) > 0 && (_logPrevByte6 & 0x08) == 0) LogPress(MapLabel("DPAD DERECHA"));
+            if ((b6 & 0x10) > 0 && (_logPrevByte6 & 0x10) == 0) LogPress(MapLabel("START"));
+            if ((b6 & 0x20) > 0 && (_logPrevByte6 & 0x20) == 0) LogPress(MapLabel("BACK"));
+            if ((b6 & 0x40) > 0 && (_logPrevByte6 & 0x40) == 0) LogPress(MapLabel("L3"));
+            if ((b6 & 0x80) > 0 && (_logPrevByte6 & 0x80) == 0) LogPress(MapLabel("R3"));
+
+            if ((b7 & 0x01) > 0 && (_logPrevByte7 & 0x01) == 0) LogPress(MapLabel("LB"));
+            if ((b7 & 0x02) > 0 && (_logPrevByte7 & 0x02) == 0) LogPress(MapLabel("RB"));
+            if ((b7 & 0x04) > 0 && (_logPrevByte7 & 0x04) == 0) LogPress(MapLabel("GUIDE"));
+            if ((b7 & 0x10) > 0 && (_logPrevByte7 & 0x10) == 0) LogPress(MapLabel("A"));
+            if ((b7 & 0x20) > 0 && (_logPrevByte7 & 0x20) == 0) LogPress(MapLabel("B"));
+            if ((b7 & 0x40) > 0 && (_logPrevByte7 & 0x40) == 0) LogPress(MapLabel("X"));
+            if ((b7 & 0x80) > 0 && (_logPrevByte7 & 0x80) == 0) LogPress(MapLabel("Y"));
+
+            if (ltNow && !_logPrevLt) LogPress(MapLabel("LT"));
+            if (rtNow && !_logPrevRt) LogPress(MapLabel("RT"));
+
+
+
+            bool upNow = (b6 & 0x01) > 0;
+            bool leftNow = (b6 & 0x04) > 0;
+            bool rightNow = (b6 & 0x08) > 0;
+            bool upBefore = (_logPrevByte6 & 0x01) > 0;
+            bool leftBefore = (_logPrevByte6 & 0x04) > 0;
+            bool rightBefore = (_logPrevByte6 & 0x08) > 0;
+
+            if (upNow && leftNow && !(upBefore && leftBefore))
+                LogPress(mouseModeFlag ? "DPAD ARRIBA+IZQUIERDA (Alt+←)" : "DPAD ARRIBA+IZQUIERDA");
+            if (upNow && rightNow && !(upBefore && rightBefore))
+                LogPress(mouseModeFlag ? "DPAD ARRIBA+DERECHA (Alt+→)" : "DPAD ARRIBA+DERECHA");
+
+            _logPrevByte6 = b6;
+            _logPrevByte7 = b7;
+            _logPrevLt = ltNow;
+            _logPrevRt = rtNow;
+
+            // Sticks analógicos — detectar cuando cruzan el umbral
+            short leftX = (short)(dataPacket[10] | (dataPacket[11] << 8));
+            short leftY = (short)(dataPacket[12] | (dataPacket[13] << 8));
+            short rightX = (short)(dataPacket[14] | (dataPacket[15] << 8));
+            short rightY = (short)(dataPacket[16] | (dataPacket[17] << 8));
+
+            bool leftActive = Math.Abs((int)leftX) > STICK_LOG_THRESHOLD || Math.Abs((int)leftY) > STICK_LOG_THRESHOLD;
+            bool rightActive = Math.Abs((int)rightX) > STICK_LOG_THRESHOLD || Math.Abs((int)rightY) > STICK_LOG_THRESHOLD;
+
+            // LS: log al entrar/salir del umbral
+            if (leftActive && !_leftStickActive)
+            {
+                string dir = GetStickDirection(leftX, leftY);
+                LogPress($"LS {dir}");
+                _leftStickActive = true;
+            }
+            else if (!leftActive && _leftStickActive)
+            {
+                _leftStickActive = false;
+            }
+
+            // RS: igual
+            if (rightActive && !_rightStickActive)
+            {
+                string dir = GetStickDirection(rightX, rightY);
+                LogPress($"RS {dir}");
+                _rightStickActive = true;
+            }
+            else if (!rightActive && _rightStickActive)
+            {
+                _rightStickActive = false;
+            }
+        }
+
+        private string GetStickDirection(short x, short y)
+        {
+            if (Math.Abs((int)x) > Math.Abs((int)y))
+                return x > 0 ? "→" : "←";
+            else
+                return y > 0 ? "↑" : "↓";
+        }
         public void ProcessGamepadData(byte[] dataPacket)
         {
-            // ------------------------------------
-            // Mapeo Nativo de Cruceta (D-Pad) XInput
-            // ------------------------------------
-            virtualGamepad.SetButtonState(Xbox360Button.Up, dataPacket[6] == 0x01 || dataPacket[6] == 0x05 || dataPacket[6] == 0x09);
-            virtualGamepad.SetButtonState(Xbox360Button.Down, dataPacket[6] == 0x02 || dataPacket[6] == 0x06 || dataPacket[6] == 0x0A);
-            virtualGamepad.SetButtonState(Xbox360Button.Left, dataPacket[6] == 0x04 || dataPacket[6] == 0x05 || dataPacket[6] == 0x06);
-            virtualGamepad.SetButtonState(Xbox360Button.Right, dataPacket[6] == 0x08 || dataPacket[6] == 0x09 || dataPacket[6] == 0x0A);
+            RegistrarBotonesEnLog(dataPacket);
 
             // -----------------
             // Modo Mouse o Botones normales
             // -----------------
             if (mouseModeFlag)
             {
-                // A Button - Clic Izquierdo
-                if ((dataPacket[7] & 0x10) > 0)
-                {
-                    if (!leftButtonDown) { Mouse.ButtonDown(Mouse.MouseKeys.Left); leftButtonDown = true; }
-                }
-                else if (leftButtonDown) { Mouse.ButtonUp(Mouse.MouseKeys.Left); leftButtonDown = false; }
-
-                // B Button - Clic Derecho
-                if ((dataPacket[7] & 0x20) > 0)
-                {
-                    if (!rightButtonDown) { Mouse.ButtonDown(Mouse.MouseKeys.Right); rightButtonDown = true; }
-                }
-                else if (rightButtonDown) { Mouse.ButtonUp(Mouse.MouseKeys.Right); rightButtonDown = false; }
+                // Todo el Mouse Mode vive ahora en MouseModeHandler
+                mouseModeHandler?.Process(dataPacket);
             }
             else
             {
-                virtualGamepad.SetButtonState(Xbox360Button.A, (dataPacket[7] & 0x10) > 0);
-                virtualGamepad.SetButtonState(Xbox360Button.B, (dataPacket[7] & 0x20) > 0);
+                // COMPORTAMIENTO NORMAL DEL MANDO
+                gamepad?.SetButton(Xbox360Button.A, (dataPacket[7] & 0x10) > 0);
+                gamepad?.SetButton(Xbox360Button.B, (dataPacket[7] & 0x20) > 0);
+                gamepad?.SetButton(Xbox360Button.X, (dataPacket[7] & 0x40) > 0);
+                gamepad?.SetButton(Xbox360Button.Y, (dataPacket[7] & 0x80) > 0);
+
+                gamepad?.SetButton(Xbox360Button.Up, (dataPacket[6] & 0x01) > 0);
+                gamepad?.SetButton(Xbox360Button.Down, (dataPacket[6] & 0x02) > 0);
+                gamepad?.SetButton(Xbox360Button.Left, (dataPacket[6] & 0x04) > 0);
+                gamepad?.SetButton(Xbox360Button.Right, (dataPacket[6] & 0x08) > 0);
             }
-
-            virtualGamepad.SetButtonState(Xbox360Button.X, (dataPacket[7] & 0x40) > 0);
-            virtualGamepad.SetButtonState(Xbox360Button.Y, (dataPacket[7] & 0x80) > 0);
-            virtualGamepad.SetButtonState(Xbox360Button.Start, (dataPacket[6] & 0x10) > 0);
-            virtualGamepad.SetButtonState(Xbox360Button.Back, (dataPacket[6] & 0x20) > 0);
-            virtualGamepad.SetButtonState(Xbox360Button.LeftThumb, (dataPacket[6] & 0x40) > 0);
-            virtualGamepad.SetButtonState(Xbox360Button.RightThumb, (dataPacket[6] & 0x80) > 0);
-            virtualGamepad.SetButtonState(Xbox360Button.Guide, (dataPacket[7] & 0x04) > 0);
-
+            
             if (mouseModeFlag)
             {
-                if ((dataPacket[7] & 0x01) > 0 && !navActive)
+                if ((dataPacket[6] & 0x10) > 0)
                 {
-                    navActive = true;
-                    Keyboard.KeyDown(Keys.LMenu); Keyboard.KeyDown(Keys.Left); Keyboard.KeyUp(Keys.Left); Keyboard.KeyUp(Keys.LMenu);
+                    if (!startKeySubscribed)
+                    {
+                        EjecutarTeclaEspecial(StartKeyCustom);
+                        startKeySubscribed = true;
+                    }
                 }
-                if ((dataPacket[7] & 0x02) > 0 && !navActive)
+                else if (startKeySubscribed)
                 {
-                    navActive = true;
-                    Keyboard.KeyDown(Keys.LMenu); Keyboard.KeyDown(Keys.Right); Keyboard.KeyUp(Keys.Right); Keyboard.KeyUp(Keys.LMenu);
+                    EjecutarLiberacionEspecial(StartKeyCustom);
+                    startKeySubscribed = false;
                 }
+                gamepad?.SetButton(Xbox360Button.Start, false);
             }
             else
             {
-                virtualGamepad.SetButtonState(Xbox360Button.LeftShoulder, (dataPacket[7] & 0x01) > 0);
-                virtualGamepad.SetButtonState(Xbox360Button.RightShoulder, (dataPacket[7] & 0x02) > 0);
+                gamepad?.SetButton(Xbox360Button.Start, (dataPacket[6] & 0x10) > 0);
             }
 
-            // ---------------
-            // Procesamiento de Ejes Analógicos
-            // ---------------
+            // BOTÓN BACK
+            if (mouseModeFlag)
+            {
+                if ((dataPacket[6] & 0x20) > 0)
+                {
+                    if (!backKeySubscribed)
+                    {
+                        EjecutarTeclaEspecial(BackKeyCustom);
+                        backKeySubscribed = true;
+                    }
+                }
+                else if (backKeySubscribed)
+                {
+                    EjecutarLiberacionEspecial(BackKeyCustom);
+                    backKeySubscribed = false;
+                }
+                gamepad?.SetButton(Xbox360Button.Back, false);
+            }
+            else
+            {
+                gamepad?.SetButton(Xbox360Button.Back, (dataPacket[6] & 0x20) > 0);
+            }
+
+            // BOTÓN GUIDE
+            bool guideButtonPressedNow = (dataPacket[7] & 0x04) > 0;
+
+            if (guideButtonPressedNow && !guideButtonLastState)
+            {
+                toggleMouseMode(!mouseModeFlag);
+                guidePressStart = DateTime.UtcNow;
+                guidePowerOffTriggered = false;
+                parentWindow.Invoke(new logCallback(parentWindow.logMessage),
+                    "C" + controllerNumber + " GUIDE pulsado.");
+            }
+
+            if (guideButtonPressedNow && !guidePowerOffTriggered && guidePressStart != DateTime.MinValue)
+            {
+                var heldMs = (DateTime.UtcNow - guidePressStart).TotalMilliseconds;
+
+                if ((int)heldMs % 1000 < 50)
+                {
+                    parentWindow.Invoke(new logCallback(parentWindow.logMessage),
+                        $"GUIDE hold {heldMs / 1000.0:F1}s C{controllerNumber}.");
+                }
+                if (heldMs >= GUIDE_HOLD_MS)
+                {
+                    sendData(controllerCommands["DisableController"]);
+
+                    try { killKeepAlive(); } catch { }
+                    try { killMouseMode(); } catch { }
+                    try { killButtonCombo(); } catch { }
+                    // ← eliminada la línea: try { killController(); } catch { }
+
+                    parentWindow.Invoke(new logCallback(parentWindow.logMessage),
+                        $"C{controllerNumber} apagado (GUIDE {GUIDE_HOLD_MS / 1000}s).");
+
+                    guidePowerOffTriggered = true;
+                }
+            }
+
+            if (!guideButtonPressedNow && guidePressStart != DateTime.MinValue)
+            {
+                guidePressStart = DateTime.MinValue;
+                guidePowerOffTriggered = false;
+                parentWindow.Invoke(new logCallback(parentWindow.logMessage),
+                    $"GUIDE released C{controllerNumber}.");
+            }
+
+            guideButtonLastState = guideButtonPressedNow;
+
+            gamepad?.SetButton(Xbox360Button.Guide, mouseModeFlag ? false : guideButtonPressedNow);
+
+            // BUMPERS
+            if (mouseModeFlag)
+            {
+                gamepad?.SetButton(Xbox360Button.LeftShoulder, false);
+                gamepad?.SetButton(Xbox360Button.RightShoulder, false);
+            }
+            else
+            {
+                gamepad?.SetButton(Xbox360Button.LeftShoulder, (dataPacket[7] & 0x01) > 0);
+                gamepad?.SetButton(Xbox360Button.RightShoulder, (dataPacket[7] & 0x02) > 0);
+            }
+
+            // STICKS Y GATILLOS
             short leftX = (short)(dataPacket[10] | (dataPacket[11] << 8));
             short leftY = (short)(dataPacket[12] | (dataPacket[13] << 8));
             short rightX = (short)(dataPacket[14] | (dataPacket[15] << 8));
@@ -427,7 +730,6 @@ namespace Xbox360WirelessChatpad
             int leftTrig = dataPacket[8];
             int rightTrig = dataPacket[9];
 
-            // Zona Muerta Stick Izquierdo
             double leftDistance = Math.Sqrt((double)(leftX * leftX) + (double)(leftY * leftY));
             if (leftDistance < deadzoneL) { leftX = 0; leftY = 0; }
             else
@@ -436,7 +738,6 @@ namespace Xbox360WirelessChatpad
                 if (Math.Abs(Convert.ToInt32(leftY)) < deadzoneL) leftY = 0;
             }
 
-            // Zona Muerta Stick Derecho
             double rightDistance = Math.Sqrt((double)(rightX * rightX) + (double)(rightY * rightY));
             if (rightDistance < deadzoneR) { rightX = 0; rightY = 0; }
             else
@@ -445,129 +746,83 @@ namespace Xbox360WirelessChatpad
                 if (Math.Abs(Convert.ToInt32(rightY)) < deadzoneR) rightY = 0;
             }
 
-            if (mouseModeFlag)
+            if (!mouseModeFlag)
             {
-                int maxVelocity = leftTrig >= 50 ? 20 : 10;
-                mouseVelX = maxVelocity * leftX / 32767;
-                mouseVelY = maxVelocity * leftY / 32767;
-                rightStickDir = rightY < 0 ? -1 : (rightY > 0 ? 1 : 0);
-            }
-            else
-            {
-                // El eje Y físico suele venir invertido respecto al espacio de ViGEm
-                virtualGamepad.SetAxisValue(Xbox360Axis.LeftThumbX, leftX);
-                virtualGamepad.SetAxisValue(Xbox360Axis.LeftThumbY, (short)-leftY);
-                virtualGamepad.SetAxisValue(Xbox360Axis.RightThumbX, rightX);
-                virtualGamepad.SetAxisValue(Xbox360Axis.RightThumbY, rightY);
+                gamepad?.SetAxis(Xbox360Axis.LeftThumbX, leftX);
+                gamepad?.SetAxis(Xbox360Axis.LeftThumbY, leftY);
+                gamepad?.SetAxis(Xbox360Axis.RightThumbX, rightX);
+                gamepad?.SetAxis(Xbox360Axis.RightThumbY, rightY);
 
                 if (triggerAsButton)
                 {
-                    virtualGamepad.SetButtonState(Xbox360Button.LeftThumb, leftTrig >= 50); // Mapeo alternativo como botón si aplica
-                    virtualGamepad.SetButtonState(Xbox360Button.RightThumb, rightTrig >= 50);
+                    gamepad?.SetSlider(Xbox360Slider.LeftTrigger, (byte)(leftTrig >= 50 ? 255 : 0));
+                    gamepad?.SetSlider(Xbox360Slider.RightTrigger, (byte)(rightTrig >= 50 ? 255 : 0));
                 }
                 else
                 {
-                    // Gatillos en ViGEm van de 0 a 255 (tipo byte)
-                    virtualGamepad.SetSliderValue(Xbox360Slider.LeftTrigger, (byte)leftTrig);
-                    virtualGamepad.SetSliderValue(Xbox360Slider.RightTrigger, (byte)rightTrig);
+                    gamepad?.SetSlider(Xbox360Slider.LeftTrigger, (byte)leftTrig);
+                    gamepad?.SetSlider(Xbox360Slider.RightTrigger, (byte)rightTrig);
                 }
+
+                gamepad?.SetButton(Xbox360Button.LeftThumb, (dataPacket[6] & 0x40) > 0);
+                gamepad?.SetButton(Xbox360Button.RightThumb, (dataPacket[6] & 0x80) > 0);
             }
 
-            // Atajos especiales
             cmdMouseModeToggle = ((dataPacket[7] & 0x01) > 0) && ((dataPacket[7] & 0x02) > 0) && ((dataPacket[6] & 0x20) > 0);
             cmdKillController = (leftTrig >= 50) && (rightTrig >= 50) && ((dataPacket[6] & 0x20) > 0);
         }
 
         private void sendData(byte[] dataToSend)
         {
-            int bytesWritten;
-            ErrorCode ec = epWriter.Write(dataToSend, 2000, out bytesWritten);
-            if (ec != ErrorCode.None)
-                parentWindow.Invoke(new logCallback(parentWindow.logMessage), "ERROR: Problem Sending Controller Data.");
+            var transport = usbTransport;
+            if (transport == null) return;
+
+            if (!transport.Send(dataToSend))
+            {
+                if (!transport.IsDead)
+                {
+                    parentWindow.BeginInvoke(new logCallback(parentWindow.logMessage),
+                        "ERROR: envío USB falló.");
+                }
+            }
         }
 
         private void ProcessKeypress(byte key)
         {
-            if (key != 0 && !chatpadKeysHeld.Contains(key))
-            {
-                chatpadKeysHeld.Add(key);
+            if (key == 0 || chatpadKeysHeld.Contains(key)) return;
 
-                if (chatpadMod["Orange"])
+            chatpadKeysHeld.Add(key);
+
+            if (chatpadMod["Orange"])
+            {
+                string s = chatpadMapper.GetOrangeKey(key);
+                if (s.Length > 0)
+                    SendKeys.SendWait(flagUpperCase ? s.ToUpper() : s);
+            }
+            else if (chatpadMod["Green"])
+            {
+                string s = chatpadMapper.GetGreenKey(key);
+                if (s.Length > 0)
+                    SendKeys.SendWait(flagUpperCase ? s.ToUpper() : s);
+            }
+            else
+            {
+                Keys mapped = chatpadMapper.GetKey(key);
+                if (mapped != Keys.None)
                 {
-                    if (flagUpperCase) SendKeys.SendWait(orangeMap[key].ToUpper()); else SendKeys.SendWait(orangeMap[key]);
-                }
-                else if (chatpadMod["Green"])
-                {
-                    if (flagUpperCase) SendKeys.SendWait(greenMap[key].ToUpper()); else SendKeys.SendWait(greenMap[key]);
-                }
-                else
-                {
-                    keyboardKeysDown.Add(keyMap[key]);
-                    Keyboard.KeyDown(keyMap[key]);
+                    keyboardKeysDown.Add(mapped);
+                    chatpadMapper.PressKey(mapped);
                 }
             }
         }
 
         public void configureChatpad(string keyboardType)
         {
-            switch (keyboardType)
-            {
-                case "Q W E R T Y":
-                    keyMap[23] = Keys.D1; greenMap[23] = ""; orangeMap[23] = "";
-                    keyMap[22] = Keys.D2; greenMap[22] = ""; orangeMap[22] = "";
-                    keyMap[21] = Keys.D3; greenMap[21] = ""; orangeMap[21] = "";
-                    keyMap[20] = Keys.D4; greenMap[20] = ""; orangeMap[20] = "";
-                    keyMap[19] = Keys.D5; greenMap[19] = ""; orangeMap[19] = "";
-                    keyMap[18] = Keys.D6; greenMap[18] = ""; orangeMap[18] = "";
-                    keyMap[17] = Keys.D7; greenMap[17] = ""; orangeMap[17] = "";
-                    keyMap[103] = Keys.D8; greenMap[103] = ""; orangeMap[103] = "";
-                    keyMap[102] = Keys.D9; greenMap[102] = ""; orangeMap[102] = "";
-                    keyMap[101] = Keys.D0; greenMap[101] = ""; orangeMap[101] = "";
-
-                    keyMap[39] = Keys.Q; greenMap[39] = "!"; orangeMap[39] = "¡";
-                    keyMap[38] = Keys.W; greenMap[38] = "@"; orangeMap[38] = "å";
-                    keyMap[37] = Keys.E; greenMap[37] = "€"; orangeMap[37] = "é";
-                    keyMap[36] = Keys.R; greenMap[36] = "#"; orangeMap[36] = "$";
-                    keyMap[35] = Keys.T; greenMap[35] = "{%}"; orangeMap[35] = "Þ";
-                    keyMap[34] = Keys.Y; greenMap[34] = "{^}"; orangeMap[34] = "ý";
-                    keyMap[33] = Keys.U; greenMap[33] = "&"; orangeMap[33] = "ú";
-                    keyMap[118] = Keys.I; greenMap[118] = "*"; orangeMap[118] = "í";
-                    keyMap[117] = Keys.O; greenMap[117] = "{(}"; orangeMap[117] = "ó";
-                    keyMap[100] = Keys.P; greenMap[100] = "{)}"; orangeMap[100] = "=";
-
-                    keyMap[55] = Keys.A; greenMap[55] = "{~}"; orangeMap[55] = "á";
-                    keyMap[54] = Keys.S; greenMap[54] = "š"; orangeMap[54] = "ß";
-                    keyMap[53] = Keys.D; greenMap[53] = "{{}"; orangeMap[53] = "ð";
-                    keyMap[52] = Keys.F; greenMap[52] = "{}}"; orangeMap[52] = "£";
-                    keyMap[51] = Keys.G; greenMap[51] = "¨"; orangeMap[51] = "¥";
-                    keyMap[50] = Keys.H; greenMap[50] = "/"; orangeMap[50] = "\\";
-                    keyMap[49] = Keys.J; greenMap[49] = "'"; orangeMap[49] = "\"";
-                    keyMap[119] = Keys.K; greenMap[119] = "{[}"; orangeMap[119] = "☺";
-                    keyMap[114] = Keys.L; greenMap[114] = "{]}"; orangeMap[114] = "ø";
-                    keyMap[98] = Keys.Oemcomma; greenMap[98] = ":"; orangeMap[98] = ";";
-
-                    keyMap[70] = Keys.Z; greenMap[70] = "`"; orangeMap[70] = "æ";
-                    keyMap[69] = Keys.X; greenMap[69] = "«"; orangeMap[69] = "œ";
-                    keyMap[68] = Keys.C; greenMap[68] = "»"; orangeMap[68] = "ç";
-                    keyMap[67] = Keys.V; greenMap[67] = "-"; orangeMap[67] = "_";
-                    keyMap[66] = Keys.B; greenMap[66] = "|"; orangeMap[66] = "{+}";
-                    keyMap[65] = Keys.N; greenMap[65] = "<"; orangeMap[65] = "ñ";
-                    keyMap[82] = Keys.M; greenMap[82] = ">"; orangeMap[82] = "µ";
-                    keyMap[83] = Keys.OemPeriod; greenMap[83] = "?"; orangeMap[83] = "¿";
-                    keyMap[99] = Keys.Enter; greenMap[99] = ""; orangeMap[99] = "";
-
-                    keyMap[85] = Keys.Left; greenMap[85] = ""; orangeMap[85] = "";
-                    keyMap[84] = Keys.Space; greenMap[84] = ""; orangeMap[84] = "";
-                    keyMap[81] = Keys.Right; greenMap[81] = ""; orangeMap[81] = "";
-                    keyMap[113] = Keys.Back; greenMap[113] = ""; orangeMap[113] = "";
-                    break;
-                // Nota: Mantenidos los demás casos (QWERTZ, AZERTY) igual si se requieren...
-            }
+            chatpadMapper.ConfigureLayout(keyboardType);
         }
 
         public void configureGamepad(bool triggerAsBtn)
         {
-            // Requerido por compatibilidad de firmas pero simplificado, ViGEm autogestiona el mapa XInput.
             triggerAsButton = triggerAsBtn;
         }
 
@@ -580,17 +835,25 @@ namespace Xbox360WirelessChatpad
         public void killController()
         {
             sendData(controllerCommands["DisableController"]);
-            if (virtualGamepad != null) virtualGamepad.Disconnect();
+            usbTransport?.Kill();
+
+            // Liberar teclas/estado del Mouse Mode antes de destruir todo
+            mouseModeHandler?.Reset();
+            mouseModeHandler = null;
+
+            gamepad?.Dispose();
+            gamepad = null;
+
             parentWindow.Invoke(new logCallback(parentWindow.logMessage),
-                "Disconnecting Xbox 360 Wireless Controller " + controllerNumber + ".");
+                "C" + controllerNumber + " cerrando.");
         }
 
-        private void tickButtonCombo()
+        private void tickButtonCombo(CancellationToken token)
         {
             int mouseModeTick = 0;
             int killControllerTick = 0;
 
-            while (true)
+            while (!token.IsCancellationRequested)
             {
                 if (cmdMouseModeToggle) mouseModeTick++; else mouseModeTick = 0;
                 if (mouseModeTick == 3) toggleMouseMode(!mouseModeFlag);
@@ -598,19 +861,23 @@ namespace Xbox360WirelessChatpad
                 if (cmdKillController) killControllerTick++; else killControllerTick = 0;
                 if (killControllerTick == 6) sendData(controllerCommands["DisableController"]);
 
-                System.Threading.Thread.Sleep(500);
+                if (token.WaitHandle.WaitOne(500)) break;
             }
         }
 
         public void killButtonCombo()
         {
-            if (threadButtonCombo != null) { threadButtonCombo.Abort(); threadButtonCombo = null; }
+            try { _buttonComboCts?.Cancel(); } catch { }
+            try { threadButtonCombo?.Join(500); } catch { }
+            _buttonComboCts?.Dispose();
+            _buttonComboCts = null;
+            threadButtonCombo = null;
         }
 
-        private void tickKeepAlive()
+        private void tickKeepAlive(CancellationToken token)
         {
             bool keepAliveToggle = false;
-            while (true)
+            while (!token.IsCancellationRequested)
             {
                 if (epWriter != null)
                 {
@@ -626,61 +893,51 @@ namespace Xbox360WirelessChatpad
                     }
 
                     if (chatpadInitNeeded) { sendData(controllerCommands["ChatpadInit"]); chatpadInitNeeded = false; }
-                    System.Threading.Thread.Sleep(1000);
                 }
+
+                // Sleep cancelable: despierta inmediatamente si cancelan
+                if (token.WaitHandle.WaitOne(1000)) break;
             }
         }
 
         public void killKeepAlive()
         {
-            if (threadKeepAlive != null) { threadKeepAlive.Abort(); threadKeepAlive = null; }
+            try { _keepAliveCts?.Cancel(); } catch { }
+            try { threadKeepAlive?.Join(500); } catch { }
+            _keepAliveCts?.Dispose();
+            _keepAliveCts = null;
+            threadKeepAlive = null;
         }
 
-        private void tickMouseMode()
+        private void tickMouseMode(CancellationToken token)
         {
-            int tickCount = 0;
-            int navActCount = 0;
-
-            while (true)
+            while (!token.IsCancellationRequested)
             {
-                if ((Math.Abs(mouseVelX) > 0) || ((Math.Abs(mouseVelY) > 0))) Mouse.MoveRelative(mouseVelX, -mouseVelY);
-
-                if (tickCount == 4)
+                var handler = mouseModeHandler;
+                if (handler != null)
                 {
-                    if (rightStickDir == -1) Mouse.Scroll(Mouse.ScrollDirection.Down);
-                    else if (rightStickDir == 1) Mouse.Scroll(Mouse.ScrollDirection.Up);
-                    tickCount = 0;
+                    int vx = handler.CursorVelocityX;
+                    int vy = handler.CursorVelocityY;
+
+                    if (vx != 0 || vy != 0)
+                        Mouse.MoveRelative(vx, -vy);
                 }
 
-                if (navActive)
-                {
-                    if (navActCount == 25) { navActive = false; navActCount = 0; }
-                    navActCount++;
-                }
-
-                tickCount++;
-                System.Threading.Thread.Sleep(20);
+                if (token.WaitHandle.WaitOne(20)) break;
             }
         }
 
         private void startMouseMode()
         {
-            mouseModeThread = new System.Threading.Thread(new System.Threading.ThreadStart(tickMouseMode));
+            var cts = new CancellationTokenSource();
+            _mouseModeCts = cts;
+
+            mouseModeThread = new System.Threading.Thread(() => tickMouseMode(cts.Token));
             mouseModeThread.IsBackground = true;
+            mouseModeThread.Name = $"MouseMode-C{controllerNumber}";
             mouseModeThread.Start();
 
-            if (virtualGamepad != null)
-            {
-                virtualGamepad.SetButtonState(Xbox360Button.LeftShoulder, false);
-                virtualGamepad.SetButtonState(Xbox360Button.RightShoulder, false);
-                virtualGamepad.SetButtonState(Xbox360Button.Back, false);
-            }
-
-            for (int i = 0; i < 3; i++)
-            {
-                sendData(controllerCommands["GreenOn"]); System.Threading.Thread.Sleep(100);
-                sendData(controllerCommands["GreenOff"]); System.Threading.Thread.Sleep(100); 
-            }
+            ParpadearLed("GreenOn", "GreenOff");
         }
 
         private void toggleMouseMode(bool mouseMode)
@@ -694,40 +951,85 @@ namespace Xbox360WirelessChatpad
             else
             {
                 mouseModeFlag = false;
+                LiberarEstadoMouseMode();   // ← NUEVO
                 killMouseMode();
                 parentWindow.Invoke(new mouseModeLabelCallback(parentWindow.mouseModeUpdate), controllerNumber, false);
             }
         }
 
+        private void LiberarEstadoMouseMode()
+        {
+            // Suelta modificadores, flechas, clics y resetea los flags del handler
+            mouseModeHandler?.Reset();
+
+            // START/BACK personalizados que pudieran haber quedado pulsados
+            if (startKeySubscribed) { EjecutarLiberacionEspecial(StartKeyCustom); startKeySubscribed = false; }
+            if (backKeySubscribed) { EjecutarLiberacionEspecial(BackKeyCustom); backKeySubscribed = false; }
+        }
+
         public void killMouseMode()
         {
-            if (mouseModeThread != null) { mouseModeThread.Abort(); mouseModeThread = null; }
+            try { _mouseModeCts?.Cancel(); } catch { }
+            try { mouseModeThread?.Join(500); } catch { }
+            _mouseModeCts?.Dispose();
+            _mouseModeCts = null;
+            mouseModeThread = null;
 
-            for (int i = 0; i < 3; i++)
-            {
-                sendData(controllerCommands["OrangeOn"]); System.Threading.Thread.Sleep(100);
-                sendData(controllerCommands["OrangeOff"]); System.Threading.Thread.Sleep(100);
-            }
+            ParpadearLed("OrangeOn", "OrangeOff");
         }
 
         private void resetComboButtons()
         {
-            if (virtualGamepad == null) return;
+            cmdMouseModeToggle = false;
+            cmdKillController = false;
 
-            foreach (Xbox360Button btn in Enum.GetValues(typeof(Xbox360Button)))
-                virtualGamepad.SetButtonState(btn, false);
+            // Delegar el reset del Mouse Mode al handler
+            mouseModeHandler?.Reset();
 
-            virtualGamepad.SetAxisValue(Xbox360Axis.LeftThumbX, 0);
-            virtualGamepad.SetAxisValue(Xbox360Axis.LeftThumbY, 0);
-            virtualGamepad.SetAxisValue(Xbox360Axis.RightThumbX, 0);
-            virtualGamepad.SetAxisValue(Xbox360Axis.RightThumbY, 0);
-            virtualGamepad.SetSliderValue(Xbox360Slider.LeftTrigger, 0);
-            virtualGamepad.SetSliderValue(Xbox360Slider.RightTrigger, 0);
+            // Limpiar el gamepad virtual
+            if (gamepad != null)
+            {
+                gamepad.SetSlider(Xbox360Slider.LeftTrigger, 0);
+                gamepad.SetSlider(Xbox360Slider.RightTrigger, 0);
+                gamepad.SetButton(Xbox360Button.Back, false);
+                gamepad.SetButton(Xbox360Button.LeftShoulder, false);
+                gamepad.SetButton(Xbox360Button.RightShoulder, false);
+            }
         }
-    }
 
-    class VjoyNotEnabledException : Exception
-    {
-        internal VjoyNotEnabledException() { }
+        // EjecutarTeclaEspecial / EjecutarLiberacionEspecial — usadas por START/BACK en Mouse Mode
+        private void EjecutarTeclaEspecial(Keys tecla)
+        {
+            if (tecla == Keys.M)
+            {
+                NativeInput.SendKeys(
+                    (NativeInput.VK_LWIN, false),
+                    (NativeInput.VK_M, false));
+                return;
+            }
+
+            if (tecla == Keys.Shift || tecla == Keys.LShiftKey) { NativeInput.SendKey(NativeInput.VK_SHIFT, false); return; }
+            if (tecla == Keys.Control || tecla == Keys.LControlKey) { NativeInput.SendKey(NativeInput.VK_CONTROL, false); return; }
+            if (tecla == Keys.Alt || tecla == Keys.LMenu) { NativeInput.SendKey(NativeInput.VK_MENU, false); return; }
+
+            Keyboard.KeyDown(tecla);
+        }
+
+        private void EjecutarLiberacionEspecial(Keys tecla)
+        {
+            if (tecla == Keys.M)
+            {
+                NativeInput.SendKeys(
+                    (NativeInput.VK_M, true),
+                    (NativeInput.VK_LWIN, true));
+                return;
+            }
+
+            if (tecla == Keys.Shift || tecla == Keys.LShiftKey) { NativeInput.SendKey(NativeInput.VK_SHIFT, true); return; }
+            if (tecla == Keys.Control || tecla == Keys.LControlKey) { NativeInput.SendKey(NativeInput.VK_CONTROL, true); return; }
+            if (tecla == Keys.Alt || tecla == Keys.LMenu) { NativeInput.SendKey(NativeInput.VK_MENU, true); return; }
+
+            Keyboard.KeyUp(tecla);
+        }
     }
 }

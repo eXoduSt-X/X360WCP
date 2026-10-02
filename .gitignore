@@ -1,0 +1,10 @@
+.vs/
+bin/
+obj/
+*.user
+*.suo
+theme.txt
+*copia.cs
+BenchmarkNet461/
+BenchmarkSuite1/
+fix-elevation.patch
