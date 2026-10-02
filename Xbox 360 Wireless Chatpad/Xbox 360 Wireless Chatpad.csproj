@@ -165,9 +165,9 @@
     <None Include="Resources\XBG.png" />
     <None Include="Resources\MAPING.png" />
     <None Include="Resources\GP_AI_BR.png" />
-	 <Content Include="icons\**\*.png">
-	  <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-	 </Content>
+    <Content Include="icons\**\*.png">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
     <Content Include="theme.txt">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
