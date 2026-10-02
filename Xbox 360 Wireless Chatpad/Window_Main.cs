@@ -111,6 +111,11 @@ namespace Xbox360WirelessChatpad
                 _scaledJoy = null;
             }
 
+            WP.Click -= WP_Click;
+            WP.Click += WP_Click;
+            JOY.Click -= JOY_Click;
+            JOY.Click += JOY_Click;
+
             InicializarTextosModo();
             InicializarSelectorColores();
             InicializarIconoBandeja();

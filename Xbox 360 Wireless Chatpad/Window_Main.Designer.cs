@@ -543,9 +543,9 @@ namespace Xbox360WirelessChatpad
             this.WP.FlatAppearance.MouseOverBackColor = System.Drawing.Color.Black;
             this.WP.FlatStyle = System.Windows.Forms.FlatStyle.Flat;
             this.WP.ForeColor = System.Drawing.SystemColors.ButtonFace;
-            this.WP.Location = new System.Drawing.Point(214, 62);
+            this.WP.Location = new System.Drawing.Point(179, 60);
             this.WP.Name = "WP";
-            this.WP.Size = new System.Drawing.Size(131, 25);
+            this.WP.Size = new System.Drawing.Size(142, 25);
             this.WP.TabIndex = 89;
             this.WP.Text = "CAMBIAR FONDO";
             this.WP.UseVisualStyleBackColor = true;
@@ -558,9 +558,9 @@ namespace Xbox360WirelessChatpad
             this.JOY.FlatAppearance.MouseOverBackColor = System.Drawing.Color.Black;
             this.JOY.FlatStyle = System.Windows.Forms.FlatStyle.Flat;
             this.JOY.ForeColor = System.Drawing.SystemColors.ButtonFace;
-            this.JOY.Location = new System.Drawing.Point(214, 22);
+            this.JOY.Location = new System.Drawing.Point(179, 22);
             this.JOY.Name = "JOY";
-            this.JOY.Size = new System.Drawing.Size(131, 25);
+            this.JOY.Size = new System.Drawing.Size(121, 25);
             this.JOY.TabIndex = 88;
             this.JOY.Text = "IMAGEN CENTRAL";
             this.JOY.UseVisualStyleBackColor = true;
